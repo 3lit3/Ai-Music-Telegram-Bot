@@ -185,11 +185,10 @@ async def got_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["title"] = update.message.text.strip()
     context.user_data["lyrics"] = []
     status = await update.message.reply_text(
-        "Step 3/5 — Send the <b>lyrics</b>, one line at a time.\n"
-        "When you're finished, tap <b>Done with lyrics</b>.\n\n"
-        "Lines received: 0",
+        "Step 3/5 — Send the <b>lyrics</b>, one line at a time.\n\n"
+        "Send your first lyric line below. The <b>Done with lyrics</b> and "
+        "<b>Cancel</b> buttons will appear once you've added a line.",
         parse_mode="HTML",
-        reply_markup=lyrics_keyboard(),
     )
     context.user_data["lyrics_status_id"] = status.message_id
     return LYRICS
@@ -197,15 +196,21 @@ async def got_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def got_lyrics_line(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["lyrics"].append(update.message.text)
-    count = len(context.user_data["lyrics"])
+    lines = context.user_data["lyrics"]
+
+    preview = "\n".join(lines)
+    if len(preview) > 1200:
+        preview = preview[:1200] + "…"
+
     try:
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=context.user_data["lyrics_status_id"],
             text=(
-                "Step 3/5 — Send the <b>lyrics</b>, one line at a time.\n"
-                "When you're finished, tap <b>Done with lyrics</b>.\n\n"
-                f"Lines received: {count}"
+                "Step 3/5 — <b>Lyrics received so far:</b>\n\n"
+                f"{html.escape(preview)}\n\n"
+                f"Lines received: {len(lines)}\n"
+                "Tap <b>Done with lyrics</b> when you're finished."
             ),
             parse_mode="HTML",
             reply_markup=lyrics_keyboard(),
@@ -224,7 +229,15 @@ async def lyrics_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     await query.answer()
     context.user_data["lyrics_text"] = "\n".join(lines)
-    await query.edit_message_text(
+
+    # Remove the buttons from the lyrics message, then put Step 4 in a new
+    # message directly below it.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:
+        logger.debug("Could not clear lyrics buttons: %s", exc)
+
+    await query.message.reply_text(
         "Step 4/5 — Send the <b>duration in seconds</b> (10–600).\n\n"
         "Example: <i>120</i>",
         parse_mode="HTML",
