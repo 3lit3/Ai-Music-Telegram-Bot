@@ -209,40 +209,58 @@ async def got_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["lyrics"] = []
     context.user_data["instrumental"] = False
     status = await update.message.reply_text(
-        "Step 3/5 — Send the <b>lyrics</b>, one line at a time.\n\n"
-        "Send your first lyric line below. The <b>Done with lyrics</b> and "
-        "<b>Cancel</b> buttons will appear once you've added a line.\n\n"
+        "Step 3/5 — Send the <b>lyrics</b>. You can paste the whole thing at once "
+        "or send it line by line.\n\n"
+        "After your lyrics, I'll post a message with the <b>Done with lyrics</b> "
+        "and <b>Cancel</b> buttons.\n\n"
         "For a song with no vocals, tap <b>Instrumental only</b> instead.",
         parse_mode="HTML",
         reply_markup=instrumental_keyboard(),
     )
-    context.user_data["lyrics_status_id"] = status.message_id
+    context.user_data["lyrics_prompt_id"] = status.message_id
     return LYRICS
 
 
 async def got_lyrics_line(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data["lyrics"].append(update.message.text)
+    # A pasted block may contain many lines; keep them as separate entries.
+    context.user_data["lyrics"].extend(update.message.text.splitlines())
     lines = context.user_data["lyrics"]
+    count = len(lines)
+    chat_id = update.effective_chat.id
 
-    preview = "\n".join(lines)
-    if len(preview) > 1200:
-        preview = preview[:1200] + "…"
+    text = (
+        f"✅ Lyrics received — {count} line(s).\n\n"
+        "Send more lines, or tap <b>Done with lyrics</b> when you're finished."
+    )
 
-    try:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=context.user_data["lyrics_status_id"],
-            text=(
-                "Step 3/5 — <b>Lyrics received so far:</b>\n\n"
-                f"{html.escape(preview)}\n\n"
-                f"Lines received: {len(lines)}\n"
-                "Tap <b>Done with lyrics</b> when you're finished."
-            ),
-            parse_mode="HTML",
-            reply_markup=lyrics_keyboard(),
+    if "lyrics_status_id" not in context.user_data:
+        # First lyrics message: remove the instrumental button from the Step 3
+        # prompt, then post the button message after the user's lyrics.
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=context.user_data["lyrics_prompt_id"],
+                reply_markup=None,
+            )
+        except Exception as exc:
+            logger.debug("Could not clear instrumental button: %s", exc)
+
+        status = await update.message.reply_text(
+            text, parse_mode="HTML", reply_markup=lyrics_keyboard()
         )
-    except Exception as exc:  # e.g. message not modified
-        logger.debug("Could not update lyrics status: %s", exc)
+        context.user_data["lyrics_status_id"] = status.message_id
+    else:
+        # Keep updating the same follow-up message instead of spamming new ones.
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=context.user_data["lyrics_status_id"],
+                text=text,
+                parse_mode="HTML",
+                reply_markup=lyrics_keyboard(),
+            )
+        except Exception as exc:  # e.g. message not modified
+            logger.debug("Could not update lyrics status: %s", exc)
     return LYRICS
 
 
