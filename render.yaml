@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ai-music-telegram-bot
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: python telegram_music_bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: WEBHOOK_URL
+        sync: false
