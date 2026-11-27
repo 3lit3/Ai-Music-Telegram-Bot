@@ -63,12 +63,23 @@ logger = logging.getLogger(__name__)
 # Music generation (adapted from generatewithmyvoice.py)
 # ============================================================
 
-def generate_song(prompt: str, title: str, lyrics: str, duration: int) -> bytes:
+def generate_song(
+    prompt: str, title: str, lyrics: str, duration: int, instrumental: bool = False
+) -> bytes:
     """Call ElevenLabs and return the generated MP3 as bytes."""
     if not ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY is not set.")
 
-    full_prompt = f"""
+    no_vocals = instrumental or not lyrics.strip()
+
+    if no_vocals:
+        full_prompt = f"""
+Create a complete instrumental song titled "{title}".
+Style: {prompt}
+No vocals. Create a polished instrumental arrangement with clear instrumentation.
+""".strip()
+    else:
+        full_prompt = f"""
 Create a complete song titled "{title}".
 Style: {prompt}
 Use these exact lyrics:
@@ -81,7 +92,7 @@ and a professional musical arrangement.
         "model_id": "music_v2",
         "prompt": full_prompt,
         "music_length_ms": duration * 1000,
-        "force_instrumental": False,
+        "force_instrumental": no_vocals,
     }
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
@@ -123,6 +134,18 @@ def lyrics_keyboard() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("✅ Done with lyrics", callback_data="lyrics_done")],
             [InlineKeyboardButton("❌ Cancel", callback_data="cancel")],
+        ]
+    )
+
+
+def instrumental_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🎵 Instrumental only (skip lyrics)", callback_data="instrumental"
+                )
+            ]
         ]
     )
 
@@ -184,11 +207,14 @@ async def got_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def got_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["title"] = update.message.text.strip()
     context.user_data["lyrics"] = []
+    context.user_data["instrumental"] = False
     status = await update.message.reply_text(
         "Step 3/5 — Send the <b>lyrics</b>, one line at a time.\n\n"
         "Send your first lyric line below. The <b>Done with lyrics</b> and "
-        "<b>Cancel</b> buttons will appear once you've added a line.",
+        "<b>Cancel</b> buttons will appear once you've added a line.\n\n"
+        "For a song with no vocals, tap <b>Instrumental only</b> instead.",
         parse_mode="HTML",
+        reply_markup=instrumental_keyboard(),
     )
     context.user_data["lyrics_status_id"] = status.message_id
     return LYRICS
@@ -222,12 +248,8 @@ async def got_lyrics_line(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def lyrics_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    lines = context.user_data.get("lyrics", [])
-    if not lines:
-        await query.answer("Add at least one lyric line first.", show_alert=True)
-        return LYRICS
-
     await query.answer()
+    lines = context.user_data.get("lyrics", [])
     context.user_data["lyrics_text"] = "\n".join(lines)
 
     # Remove the buttons from the lyrics message, then put Step 4 in a new
@@ -236,6 +258,27 @@ async def lyrics_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception as exc:
         logger.debug("Could not clear lyrics buttons: %s", exc)
+
+    await query.message.reply_text(
+        "Step 4/5 — Send the <b>duration in seconds</b> (10–600).\n\n"
+        "Example: <i>120</i>",
+        parse_mode="HTML",
+        reply_markup=cancel_keyboard(),
+    )
+    return DURATION
+
+
+async def instrumental_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Skip lyrics entirely and continue as an instrumental track."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data["lyrics_text"] = ""
+    context.user_data["instrumental"] = True
+
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:
+        logger.debug("Could not clear instrumental button: %s", exc)
 
     await query.message.reply_text(
         "Step 4/5 — Send the <b>duration in seconds</b> (10–600).\n\n"
@@ -260,6 +303,9 @@ async def got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     title = context.user_data["title"]
     lyrics_text = context.user_data["lyrics_text"]
     preview = lyrics_text if len(lyrics_text) <= 300 else lyrics_text[:300] + "…"
+    lyrics_display = (
+        html.escape(preview) if preview else "<i>Instrumental (no vocals)</i>"
+    )
 
     # User text is inserted into an HTML-mode message, so escape it.
     summary = (
@@ -267,7 +313,7 @@ async def got_duration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         f"<b>Title:</b> {html.escape(title)}\n"
         f"<b>Prompt:</b> {html.escape(prompt)}\n"
         f"<b>Duration:</b> {raw}s\n"
-        f"<b>Lyrics:</b>\n{html.escape(preview)}\n\n"
+        f"<b>Lyrics:</b>\n{lyrics_display}\n\n"
         "Tap <b>Generate</b> when you're ready."
     )
     await update.message.reply_text(
@@ -288,9 +334,10 @@ async def do_generate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     lyrics_text = context.user_data["lyrics_text"]
     duration = context.user_data["duration"]
 
+    instrumental = bool(context.user_data.get("instrumental", False))
     try:
         audio_bytes = await asyncio.to_thread(
-            generate_song, prompt, title, lyrics_text, duration
+            generate_song, prompt, title, lyrics_text, duration, instrumental
         )
     except Exception as exc:
         logger.exception("Music generation failed")
@@ -333,7 +380,7 @@ async def send_audio_with_retry(
                 audio=audio,
                 title=title,
                 performer="AI Music Bot",
-                caption=f"🎵 {title}\nGenerated by ElevenLabs Music",
+                caption=f"🎵 {title}\nGenerated by 3lit3 Automations",
             )
             return
         except TimedOut:
@@ -373,6 +420,7 @@ def build_app() -> Application:
             PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_prompt)],
             TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_title)],
             LYRICS: [
+                CallbackQueryHandler(instrumental_only, pattern="^instrumental$"),
                 CallbackQueryHandler(lyrics_done, pattern="^lyrics_done$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, got_lyrics_line),
             ],
